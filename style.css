@@ -1,0 +1,400 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Arial', 'Helvetica', sans-serif;
+    background: #0a0a0a;
+    color: #c0b090;
+    overflow: hidden;
+}
+
+#game-container {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: #0d0d0d;
+}
+
+/* ===== 하단 커맨드 패널 (메뉴 틀 기본 참고 - 금/청 테두리) ===== */
+/* ===== 하단 커맨드 패널 (메뉴 틀 참고 - 금/청 테두리) ===== */
+#command-panel.menu-frame {
+    display: flex;
+    align-items: stretch;
+    flex-shrink: 0;
+    min-height: 148px;
+    background: linear-gradient(0deg, #0c1018 0%, #141c28 25%, #1a2435 50%, #152030 100%);
+    border: 2px solid #3a4a5a;
+    border-top: 3px solid #5a6a7a;
+    padding: 10px 12px;
+    box-shadow: inset 0 0 0 1px rgba(180, 160, 100, 0.12), inset 0 2px 0 rgba(100, 140, 200, 0.08), 0 -4px 16px rgba(0,0,0,0.5);
+}
+
+/* 메뉴 틀 내부 섹션 (금/청 테두리) */
+.frame-inner {
+    border: 1px solid #2a3545;
+    box-shadow: inset 0 0 0 1px rgba(200, 180, 120, 0.08);
+    border-radius: 3px;
+}
+
+/* 왼쪽: 자원 + 미니맵 (한 패널) */
+#panel-left {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+    padding: 8px 10px;
+    background: linear-gradient(180deg, #1a2332 0%, #0f151e 100%);
+    margin-right: 10px;
+}
+
+#resources {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.resource-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.resource-icon {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+    display: block;
+}
+.resource-icon-fallback {
+    display: none;
+    font-size: 18px;
+}
+.resource-icon-fallback.show { display: inline; }
+.resource-icon-fallback.mineral { color: #e8c040; }
+.resource-icon-fallback.gas { color: #40c0e0; }
+
+.resource-label {
+    font-size: 11px;
+    color: #6a7a8a;
+    letter-spacing: 0.5px;
+}
+
+.resource-value {
+    font-size: 16px;
+    font-weight: bold;
+    color: #e8e0c8;
+    text-shadow: 0 0 4px rgba(0,0,0,0.8);
+    min-width: 32px;
+}
+
+.resource-item.supply .resource-value {
+    color: #80c0a0;
+}
+
+#minimap-wrap {
+    flex-shrink: 0;
+    padding: 3px;
+    background: #05080a;
+    border: 1px solid #2a3545;
+    border-radius: 2px;
+    box-shadow: inset 0 0 6px rgba(0,0,0,0.6);
+}
+
+#minimap {
+    display: block;
+    width: 160px;
+    height: 160px;
+    background: #0a0a0a;
+    cursor: pointer;
+    border-radius: 2px;
+}
+
+/* 가운데: 선택된 유닛/건물 정보 */
+#selected-info {
+    flex: 0 0 200px;
+    min-width: 180px;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #b0a890;
+    margin: 0 10px;
+    display: flex;
+    align-items: center;
+    background: linear-gradient(180deg, #141c26 0%, #0e141c 100%);
+}
+
+#selected-info:empty::before {
+    content: '유닛 또는 건물을 선택하세요';
+    color: #5a6a6a;
+    font-style: italic;
+}
+
+/* 오른쪽: 명령 카드(공격·정지 등) + 빌드 */
+#panel-right {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    background: linear-gradient(180deg, #161e2a 0%, #101820 100%);
+}
+
+#action-panel {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.action-btn {
+    padding: 8px 6px;
+    font-size: 11px;
+    font-weight: bold;
+    color: #e0d8c0;
+    background: linear-gradient(180deg, #2a3540 0%, #1a2228 50%, #151a20 100%);
+    border: 1px solid #3a4550;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    box-shadow: 0 1px 0 rgba(80, 100, 120, 0.2);
+}
+
+.action-btn:hover {
+    background: linear-gradient(180deg, #3a4555 0%, #252d38 100%);
+    color: #fff;
+    border-color: #4a5568;
+}
+
+.action-btn:active {
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.4);
+}
+
+/* ===== 게임 영역 ===== */
+.game-area {
+    position: relative;
+    flex: 1;
+    min-height: 300px;
+    background: #080808;
+    border-left: 2px solid #1a2015;
+    border-right: 2px solid #1a2015;
+}
+
+#game-canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #0a0a0a;
+    cursor: crosshair;
+}
+
+#build-panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-content: flex-start;
+    align-items: flex-start;
+}
+
+.build-btn {
+    width: 56px;
+    height: 48px;
+    padding: 4px 6px;
+    font-size: 10px;
+    font-weight: bold;
+    color: #e0d8c0;
+    background: linear-gradient(180deg, #2a3540 0%, #1a2228 50%, #151a20 100%);
+    border: 1px solid #3a4550;
+    border-radius: 3px;
+    cursor: pointer;
+    text-align: center;
+    line-height: 1.2;
+    box-shadow: 0 1px 0 rgba(80, 100, 120, 0.2);
+    transition: background 0.15s, color 0.15s;
+}
+
+.build-btn:hover {
+    background: linear-gradient(180deg, #3a4555 0%, #252d38 100%);
+    color: #fff;
+    border-color: #4a5568;
+}
+
+.build-btn:active {
+    background: linear-gradient(180deg, #1a2018 0%, #252d20 100%);
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
+}
+
+.build-btn:disabled {
+    color: #4a5540;
+    cursor: not-allowed;
+    background: #151a12;
+    border-color: #1a2015;
+}
+
+/* 선택 유닛/건물 정보 스타일 */
+.unit-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.unit-name {
+    font-size: 15px;
+    font-weight: bold;
+    color: #a0c090;
+    text-shadow: 0 0 6px rgba(100, 160, 80, 0.4);
+}
+
+.unit-stats {
+    display: flex;
+    gap: 14px;
+    font-size: 12px;
+    color: #909870;
+}
+
+.stat {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* ===== 플레이 메뉴 화면 (기본.jpg 배경 적용) ===== */
+.menu-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.menu-bg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #0a0c0a;
+    background-image: linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.75) 100%), url('assets/기본.jpg');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+
+.menu-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.5) 100%);
+    pointer-events: none;
+}
+
+.menu-content {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    text-align: center;
+}
+
+.menu-title {
+    font-size: 42px;
+    font-weight: bold;
+    color: #e8e0c8;
+    text-shadow: 0 0 20px rgba(180, 160, 100, 0.5), 0 2px 4px rgba(0,0,0,0.8);
+    letter-spacing: 4px;
+    margin-bottom: 8px;
+}
+
+.menu-subtitle {
+    font-size: 14px;
+    color: #8a9078;
+    letter-spacing: 2px;
+    margin-bottom: 48px;
+}
+
+/* 종족 선택 패널 */
+.race-select-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 28px 36px;
+    background: linear-gradient(180deg, rgba(20, 25, 22, 0.92) 0%, rgba(12, 16, 14, 0.95) 100%);
+    border: 2px solid rgba(180, 160, 100, 0.35);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+.race-select-panel h2 {
+    font-size: 22px;
+    color: #a0c090;
+    margin-bottom: 8px;
+    text-shadow: 0 0 10px rgba(100, 160, 80, 0.4);
+}
+
+.race-select-panel > p {
+    font-size: 13px;
+    color: #6a7a5a;
+    margin-bottom: 24px;
+}
+
+#race-buttons {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.race-btn {
+    width: 180px;
+    padding: 22px 18px;
+    background: linear-gradient(180deg, rgba(30, 37, 30, 0.95) 0%, rgba(18, 24, 20, 0.98) 100%);
+    border: 2px solid #2a3520;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: #c0b090;
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+
+.race-btn:hover {
+    border-color: #4a5a38;
+    box-shadow: 0 0 24px rgba(80, 120, 60, 0.35);
+    transform: translateY(-2px);
+}
+
+.race-btn .race-name {
+    font-size: 18px;
+    font-weight: bold;
+    color: #e0d8c0;
+}
+
+#race-terran .race-name { color: #90b0a0; }
+#race-zerg .race-name   { color: #b07090; }
+#race-protoss .race-name { color: #c0a060; }
+
+.race-btn .race-desc {
+    font-size: 11px;
+    color: #6a7a5a;
+}
+
+.menu-screen.hidden {
+    display: none;
+}
