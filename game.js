@@ -20,13 +20,222 @@ resizeCanvas();
 window.addEventListener('resize', resizeCanvas);
 window.addEventListener('load', function() { resizeCanvas(); });
 
-// 맵 크기 및 양끝 기지 위치
+// 맵 크기
 const MAP_W = 3000;
 const MAP_H = 3000;
-const PLAYER_BASE_X = 220;
-const PLAYER_BASE_Y = 220;
-const ENEMY_BASE_X = MAP_W - 220;
-const ENEMY_BASE_Y = MAP_H - 220;
+const MAP_CX = MAP_W / 2;
+const MAP_CY = MAP_H / 2;
+// 시계 방향 시작 위치 (11, 12, 1, 3, 5, 6, 7, 9시) — 반지름 1300
+var START_CLOCKS = [11, 12, 1, 3, 5, 6, 7, 9];
+function getStartPosition(clock) {
+    var angleDeg = { 11: 240, 12: 270, 1: 300, 3: 0, 5: 60, 6: 90, 7: 120, 9: 180 }[clock];
+    var rad = (angleDeg * Math.PI) / 180;
+    return { x: MAP_CX + 1300 * Math.cos(rad), y: MAP_CY + 1300 * Math.sin(rad), clock: clock };
+}
+function getAllStartPositions() {
+    var list = [];
+    for (var i = 0; i < START_CLOCKS.length; i++) list.push(getStartPosition(START_CLOCKS[i]));
+    return list;
+}
+
+// 직선 이동 차단용 장벽: 8개 방사형 벽(인접 시작점 사이), 반드시 중앙을 거쳐야 통과
+var MAP_BARRIERS = (function() {
+    var list = [];
+    // 맵 끝까지 막히도록 중앙→끝 반지름까지 확장
+    var outerR = Math.floor(Math.min(MAP_W, MAP_H) / 2) - 40;
+    // 장벽을 "바깥쪽에 붙게" 생성: 외곽에만 두고 안쪽(중앙 쪽) 조각은 제거
+    // 값이 클수록 장벽이 더 바깥쪽에만 생성됨
+    var innerR = Math.max(outerR - 720, 900);
+    // 간격/사이즈를 키워 옆으로 "비집고" 통과하는 구간 방지
+    var step = 55;
+    var size = 92;
+    var midAngles = [255, 285, 330, 30, 75, 105, 150, 210];
+    for (var a = 0; a < midAngles.length; a++) {
+        var deg = midAngles[a];
+        var rad = (deg * Math.PI) / 180;
+        for (var r = innerR; r <= outerR; r += step) {
+            list.push({
+                x: MAP_CX + r * Math.cos(rad),
+                y: MAP_CY + r * Math.sin(rad),
+                w: size,
+                h: size
+            });
+        }
+    }
+    return list;
+})();
+function isPointInBarrier(x, y) {
+    for (var i = 0; i < MAP_BARRIERS.length; i++) {
+        var b = MAP_BARRIERS[i];
+        if (x >= b.x - b.w / 2 && x <= b.x + b.w / 2 && y >= b.y - b.h / 2 && y <= b.y + b.h / 2) return true;
+    }
+    return false;
+}
+
+// 가스 채취는 "가스 건물"이 해당 가스 위에 있어야만 가능
+function getGasBuildingTypeForRace(race) {
+    if (race === 'zerg') return 'extractor';
+    if (race === 'protoss') return 'assimilator';
+    return 'refinery'; // terran
+}
+function findGasNodeNear(x, y, maxDist) {
+    var best = null;
+    var bestD = (maxDist || 60) * (maxDist || 60);
+    for (var i = 0; i < gameState.resources.length; i++) {
+        var r = gameState.resources[i];
+        if (!r || r.type !== 'gas' || r.amount <= 0) continue;
+        var dx = r.x - x;
+        var dy = r.y - y;
+        var d = dx * dx + dy * dy;
+        if (d <= bestD) { bestD = d; best = r; }
+    }
+    return best;
+}
+function hasGasBuildingOnNode(team, gasNode) {
+    if (!gasNode) return false;
+    var race = (team === 'enemy') ? (gameState.enemyRace || 'terran') : (gameState.playerRace || 'terran');
+    var gasBuildingType = getGasBuildingTypeForRace(race);
+    var list = (team === 'enemy') ? gameState.enemyBuildings : gameState.buildings;
+    for (var i = 0; i < list.length; i++) {
+        var b = list[i];
+        if (!b || b.team !== team || b.type !== gasBuildingType) continue;
+        var dx = b.x - gasNode.x;
+        var dy = b.y - gasNode.y;
+        if (dx * dx + dy * dy <= 40 * 40) return true;
+    }
+    return false;
+}
+
+// 크립: 부화장/레어/하이브/크립콜로니 범위 내만 건물 가능 (해당 건물들은 예외)
+var CREEP_RANGE = 420;
+function isOnCreep(x, y) {
+    var list = gameState.buildings;
+    var creepTypes = ['hatchery', 'lair', 'hive', 'creep-colony'];
+    for (var i = 0; i < list.length; i++) {
+        var b = list[i];
+        if (!b || b.team !== 'player') continue;
+        if (creepTypes.indexOf(b.type) < 0) continue;
+        var dx = b.x - x;
+        var dy = b.y - y;
+        if (dx * dx + dy * dy <= CREEP_RANGE * CREEP_RANGE) return true;
+    }
+    return false;
+}
+
+// 프로토스: 수정탑(파일론) 범위 내만 건물 가능 (넥서스는 예외)
+var PYLON_RANGE = 320;
+function isInPylonRange(x, y) {
+    for (var i = 0; i < gameState.buildings.length; i++) {
+        var b = gameState.buildings[i];
+        if (!b || b.team !== 'player' || b.type !== 'pylon') continue;
+        var dx = b.x - x;
+        var dy = b.y - y;
+        if (dx * dx + dy * dy <= PYLON_RANGE * PYLON_RANGE) return true;
+    }
+    return false;
+}
+
+// 미네랄/가스에 바로 붙여서 건설 불가 (최소 거리)
+var MIN_DISTANCE_FROM_RESOURCE = 58;
+function isTooCloseToResource(x, y, excludeResource) {
+    for (var i = 0; i < gameState.resources.length; i++) {
+        var r = gameState.resources[i];
+        if (!r || r === excludeResource) continue;
+        var dx = r.x - x;
+        var dy = r.y - y;
+        var d = Math.sqrt(dx * dx + dy * dy);
+        if (d < MIN_DISTANCE_FROM_RESOURCE) return true;
+    }
+    return false;
+}
+
+// 스타1 스타일 안개(Fog of War)
+var FOG_CELL = 40; // 낮을수록 더 촘촘(성능 ↓)
+var fogW = Math.ceil(MAP_W / FOG_CELL);
+var fogH = Math.ceil(MAP_H / FOG_CELL);
+var fogExplored = new Uint8Array(fogW * fogH); // 0: 미탐험, 1: 탐험됨
+var fogVisible = new Uint8Array(fogW * fogH);  // 0: 비가시, 1: 현재 시야
+
+function resetFog() {
+    fogExplored.fill(0);
+    fogVisible.fill(0);
+}
+function fogIndex(cx, cy) {
+    if (cx < 0 || cy < 0 || cx >= fogW || cy >= fogH) return -1;
+    return cy * fogW + cx;
+}
+function markVision(x, y, radius) {
+    var cx0 = Math.floor((x - radius) / FOG_CELL);
+    var cy0 = Math.floor((y - radius) / FOG_CELL);
+    var cx1 = Math.floor((x + radius) / FOG_CELL);
+    var cy1 = Math.floor((y + radius) / FOG_CELL);
+    for (var cy = cy0; cy <= cy1; cy++) {
+        for (var cx = cx0; cx <= cx1; cx++) {
+            var idx = fogIndex(cx, cy);
+            if (idx < 0) continue;
+            var ccx = cx * FOG_CELL + FOG_CELL / 2;
+            var ccy = cy * FOG_CELL + FOG_CELL / 2;
+            var dx = ccx - x;
+            var dy = ccy - y;
+            if (dx * dx + dy * dy <= radius * radius) {
+                fogVisible[idx] = 1;
+                fogExplored[idx] = 1;
+            }
+        }
+    }
+}
+function updateFogOfWar() {
+    fogVisible.fill(0);
+    // 유닛 시야
+    for (var i = 0; i < gameState.units.length; i++) {
+        var u = gameState.units[i];
+        var r = 260;
+        // 공중/대형은 살짝 넓게
+        if (u.data && (u.data.size >= 18)) r = 300;
+        markVision(u.x, u.y, r);
+    }
+    // 건물 시야
+    for (var j = 0; j < gameState.buildings.length; j++) {
+        var b = gameState.buildings[j];
+        markVision(b.x, b.y, 360);
+    }
+}
+function isVisibleWorld(x, y) {
+    var cx = Math.floor(x / FOG_CELL);
+    var cy = Math.floor(y / FOG_CELL);
+    var idx = fogIndex(cx, cy);
+    if (idx < 0) return false;
+    return fogVisible[idx] === 1;
+}
+function isExploredWorld(x, y) {
+    var cx = Math.floor(x / FOG_CELL);
+    var cy = Math.floor(y / FOG_CELL);
+    var idx = fogIndex(cx, cy);
+    if (idx < 0) return false;
+    return fogExplored[idx] === 1;
+}
+function drawFogOverlay() {
+    var cam = gameState.camera;
+    // 화면에 보이는 셀만 그려서 성능 확보
+    var cx0 = Math.max(0, Math.floor(cam.x / FOG_CELL) - 1);
+    var cy0 = Math.max(0, Math.floor(cam.y / FOG_CELL) - 1);
+    var cx1 = Math.min(fogW - 1, Math.floor((cam.x + canvas.width) / FOG_CELL) + 1);
+    var cy1 = Math.min(fogH - 1, Math.floor((cam.y + canvas.height) / FOG_CELL) + 1);
+
+    for (var cy = cy0; cy <= cy1; cy++) {
+        for (var cx = cx0; cx <= cx1; cx++) {
+            var idx = cy * fogW + cx;
+            var explored = fogExplored[idx] === 1;
+            var visible = fogVisible[idx] === 1;
+            if (visible) continue;
+            // 미탐험은 더 진하게, 탐험은 옅은 안개
+            ctx.fillStyle = explored ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.92)';
+            var wx = cx * FOG_CELL;
+            var wy = cy * FOG_CELL;
+            ctx.fillRect(wx - cam.x, wy - cam.y, FOG_CELL + 1, FOG_CELL + 1);
+        }
+    }
+}
 
 // 게임 상태
 const gameState = {
@@ -51,6 +260,7 @@ const gameState = {
     mapSize: { width: MAP_W, height: MAP_H },
     playerRace: 'terran',
     upgrades: {}, // 완료된 업그레이드 상태(키: upgradeId, 값: 레벨/true)
+    researching: null, // { id, label, remaining, up, buildingId } 연구 중인 업그레이드 (remaining = 프레임)
     gameOver: false,
     victory: false
 };
@@ -62,49 +272,53 @@ function clampCamera() {
     gameState.camera.y = Math.max(0, Math.min(gameState.camera.y, maxY));
 }
 
+// 게임 속도: 1 게임 초당 프레임 수 (생산/업그레이드 시간 계산용)
+const FRAMES_PER_GAME_SEC = 24;
+
 // 유닛 타입 정의 (테란 / 저그 / 프로토스 - 스타크래프트 동일)
+// trainTime: 생산 소요 시간(게임 초)
 const unitTypes = {
     // ===== 테란 =====
-    scv: { name: 'SCV', cost: { minerals: 50, gas: 0 }, supply: 1, hp: 45, maxHp: 45, speed: 1.5, size: 12, color: '#ffd700', canBuild: true, canMine: true },
-    marine: { name: '마린', cost: { minerals: 50, gas: 0 }, supply: 1, hp: 40, maxHp: 40, speed: 2, size: 10, color: '#3498db', attack: 6, range: 5, canAttack: true, canGarrison: true },
-    firebat: { name: '파이어뱃', cost: { minerals: 50, gas: 25 }, supply: 1, hp: 50, maxHp: 50, speed: 1.8, size: 10, color: '#c0392b', attack: 8, range: 2, canAttack: true, canGarrison: true },
-    ghost: { name: '고스트', cost: { minerals: 25, gas: 75 }, supply: 1, hp: 45, maxHp: 45, speed: 2, size: 10, color: '#8e44ad', attack: 10, range: 6, canAttack: true, canGarrison: true },
-    medic: { name: '메딕', cost: { minerals: 50, gas: 25 }, supply: 1, hp: 60, maxHp: 60, speed: 2, size: 10, color: '#ffffff' },
-    vulture: { name: '벌처', cost: { minerals: 75, gas: 0 }, supply: 2, hp: 80, maxHp: 80, speed: 3, size: 12, color: '#95a5a6', attack: 10, range: 6, canAttack: true },
-    tank: { name: '시즈 탱크', cost: { minerals: 150, gas: 100 }, supply: 2, hp: 150, maxHp: 150, speed: 1, size: 16, color: '#7f8c8d', attack: 30, range: 12, canAttack: true },
-    goliath: { name: '골리앗', cost: { minerals: 100, gas: 50 }, supply: 2, hp: 125, maxHp: 125, speed: 1.5, size: 14, color: '#5d6d7e', attack: 12, range: 8, canAttack: true },
-    wraith: { name: '레이스', cost: { minerals: 150, gas: 100 }, supply: 2, hp: 120, maxHp: 120, speed: 2.5, size: 12, color: '#9fb3c8', attack: 16, range: 6, canAttack: true },
-    dropship: { name: '드랍십', cost: { minerals: 100, gas: 100 }, supply: 2, hp: 150, maxHp: 150, speed: 2.4, size: 14, color: '#c0c0c0' },
-    valkyrie: { name: '발키리', cost: { minerals: 250, gas: 125 }, supply: 3, hp: 200, maxHp: 200, speed: 2.5, size: 14, color: '#c9d6ff', attack: 20, range: 6, canAttack: true },
-    sciencevessel: { name: '사이언스 베슬', cost: { minerals: 100, gas: 225 }, supply: 2, hp: 200, maxHp: 200, speed: 2, size: 14, color: '#c0ffef' },
-    battlecruiser: { name: '배틀크루저', cost: { minerals: 400, gas: 300 }, supply: 6, hp: 500, maxHp: 500, speed: 1.5, size: 20, color: '#c2b59b', attack: 40, range: 8, canAttack: true },
+    scv: { name: 'SCV', cost: { minerals: 50, gas: 0 }, supply: 1, hp: 45, maxHp: 45, speed: 1.5, size: 12, color: '#ffd700', canBuild: true, canMine: true, trainTime: 20 },
+    marine: { name: '마린', cost: { minerals: 50, gas: 0 }, supply: 1, hp: 40, maxHp: 40, speed: 2, size: 10, color: '#3498db', attack: 6, range: 5, canAttack: true, canGarrison: true, trainTime: 24 },
+    firebat: { name: '파이어뱃', cost: { minerals: 50, gas: 25 }, supply: 1, hp: 50, maxHp: 50, speed: 1.8, size: 10, color: '#c0392b', attack: 8, range: 2, canAttack: true, canGarrison: true, trainTime: 24 },
+    ghost: { name: '고스트', cost: { minerals: 25, gas: 75 }, supply: 1, hp: 45, maxHp: 45, speed: 2, size: 10, color: '#8e44ad', attack: 10, range: 6, canAttack: true, canGarrison: true, trainTime: 40 },
+    medic: { name: '메딕', cost: { minerals: 50, gas: 25 }, supply: 1, hp: 60, maxHp: 60, speed: 2, size: 10, color: '#ffffff', trainTime: 30 },
+    vulture: { name: '벌처', cost: { minerals: 75, gas: 0 }, supply: 2, hp: 80, maxHp: 80, speed: 3, size: 12, color: '#95a5a6', attack: 10, range: 6, canAttack: true, trainTime: 30 },
+    tank: { name: '시즈 탱크', cost: { minerals: 150, gas: 100 }, supply: 2, hp: 150, maxHp: 150, speed: 1, size: 16, color: '#7f8c8d', attack: 30, range: 12, canAttack: true, trainTime: 55 },
+    goliath: { name: '골리앗', cost: { minerals: 100, gas: 50 }, supply: 2, hp: 125, maxHp: 125, speed: 1.5, size: 14, color: '#5d6d7e', attack: 12, range: 8, canAttack: true, trainTime: 40 },
+    wraith: { name: '레이스', cost: { minerals: 150, gas: 100 }, supply: 2, hp: 120, maxHp: 120, speed: 2.5, size: 12, color: '#9fb3c8', attack: 16, range: 6, canAttack: true, trainTime: 45 },
+    dropship: { name: '드랍십', cost: { minerals: 100, gas: 100 }, supply: 2, hp: 150, maxHp: 150, speed: 2.4, size: 14, color: '#c0c0c0', trainTime: 30 },
+    valkyrie: { name: '발키리', cost: { minerals: 250, gas: 125 }, supply: 3, hp: 200, maxHp: 200, speed: 2.5, size: 14, color: '#c9d6ff', attack: 20, range: 6, canAttack: true, trainTime: 64 },
+    sciencevessel: { name: '사이언스 베슬', cost: { minerals: 100, gas: 225 }, supply: 2, hp: 200, maxHp: 200, speed: 2, size: 14, color: '#c0ffef', trainTime: 60 },
+    battlecruiser: { name: '배틀크루저', cost: { minerals: 400, gas: 300 }, supply: 6, hp: 500, maxHp: 500, speed: 1.5, size: 20, color: '#c2b59b', attack: 40, range: 8, canAttack: true, trainTime: 133 },
     // ===== 저그 =====
-    drone: { name: '드론', cost: { minerals: 50, gas: 0 }, supply: 1, hp: 40, maxHp: 40, speed: 1.6, size: 11, color: '#9966aa', canBuild: true, canMine: true },
-    zergling: { name: '저글링', cost: { minerals: 25, gas: 0 }, supply: 1, hp: 35, maxHp: 35, speed: 3.5, size: 8, color: '#cc4466', attack: 5, range: 2, canAttack: true },
-    hydralisk: { name: '히드라리스크', cost: { minerals: 75, gas: 25 }, supply: 1, hp: 80, maxHp: 80, speed: 2, size: 12, color: '#66aa44', attack: 10, range: 5, canAttack: true },
-    lurker: { name: '러커', cost: { minerals: 125, gas: 125 }, supply: 2, hp: 125, maxHp: 125, speed: 1.5, size: 14, color: '#887744', attack: 20, range: 7, canAttack: true },
-    ultralisk: { name: '울트라리스크', cost: { minerals: 200, gas: 200 }, supply: 6, hp: 400, maxHp: 400, speed: 2, size: 22, color: '#885522', attack: 20, range: 2, canAttack: true },
-    defiler: { name: '디파일러', cost: { minerals: 50, gas: 150 }, supply: 2, hp: 80, maxHp: 80, speed: 2, size: 12, color: '#553355' },
-    queen: { name: '퀸', cost: { minerals: 100, gas: 100 }, supply: 2, hp: 120, maxHp: 120, speed: 2.5, size: 12, color: '#aa66aa' },
-    mutalisk: { name: '뮤탈리스크', cost: { minerals: 100, gas: 100 }, supply: 2, hp: 120, maxHp: 120, speed: 3, size: 12, color: '#44aacc', attack: 9, range: 3, canAttack: true },
-    scourge: { name: '스커지', cost: { minerals: 25, gas: 75 }, supply: 1, hp: 25, maxHp: 25, speed: 3.5, size: 8, color: '#aa8844', attack: 110, range: 1, canAttack: true },
-    guardian: { name: '가디언', cost: { minerals: 50, gas: 100 }, supply: 2, hp: 150, maxHp: 150, speed: 1.5, size: 16, color: '#446688', attack: 20, range: 8, canAttack: true },
-    devourer: { name: '디바우러', cost: { minerals: 150, gas: 50 }, supply: 4, hp: 250, maxHp: 250, speed: 1.8, size: 18, color: '#335577', attack: 25, range: 6, canAttack: true },
-    overlord: { name: '오버로드', cost: { minerals: 100, gas: 0 }, supply: 0, supplyProvided: 8, hp: 200, maxHp: 200, speed: 1.5, size: 18, color: '#774466', canAttack: false },
+    drone: { name: '드론', cost: { minerals: 50, gas: 0 }, supply: 1, hp: 40, maxHp: 40, speed: 1.6, size: 11, color: '#9966aa', canBuild: true, canMine: true, trainTime: 20 },
+    zergling: { name: '저글링', cost: { minerals: 25, gas: 0 }, supply: 1, hp: 35, maxHp: 35, speed: 3.5, size: 8, color: '#cc4466', attack: 5, range: 2, canAttack: true, trainTime: 28 },
+    hydralisk: { name: '히드라리스크', cost: { minerals: 75, gas: 25 }, supply: 1, hp: 80, maxHp: 80, speed: 2, size: 12, color: '#66aa44', attack: 10, range: 5, canAttack: true, trainTime: 40 },
+    lurker: { name: '러커', cost: { minerals: 125, gas: 125 }, supply: 2, hp: 125, maxHp: 125, speed: 1.5, size: 14, color: '#887744', attack: 20, range: 7, canAttack: true, trainTime: 40 },
+    ultralisk: { name: '울트라리스크', cost: { minerals: 200, gas: 200 }, supply: 6, hp: 400, maxHp: 400, speed: 2, size: 22, color: '#885522', attack: 20, range: 2, canAttack: true, trainTime: 70 },
+    defiler: { name: '디파일러', cost: { minerals: 50, gas: 150 }, supply: 2, hp: 80, maxHp: 80, speed: 2, size: 12, color: '#553355', trainTime: 50 },
+    queen: { name: '퀸', cost: { minerals: 100, gas: 100 }, supply: 2, hp: 120, maxHp: 120, speed: 2.5, size: 12, color: '#aa66aa', trainTime: 50 },
+    mutalisk: { name: '뮤탈리스크', cost: { minerals: 100, gas: 100 }, supply: 2, hp: 120, maxHp: 120, speed: 3, size: 12, color: '#44aacc', attack: 9, range: 3, canAttack: true, trainTime: 40 },
+    scourge: { name: '스커지', cost: { minerals: 25, gas: 75 }, supply: 1, hp: 25, maxHp: 25, speed: 3.5, size: 8, color: '#aa8844', attack: 110, range: 1, canAttack: true, trainTime: 30 },
+    guardian: { name: '가디언', cost: { minerals: 50, gas: 100 }, supply: 2, hp: 150, maxHp: 150, speed: 1.5, size: 16, color: '#446688', attack: 20, range: 8, canAttack: true, trainTime: 40 },
+    devourer: { name: '디바우러', cost: { minerals: 150, gas: 50 }, supply: 4, hp: 250, maxHp: 250, speed: 1.8, size: 18, color: '#335577', attack: 25, range: 6, canAttack: true, trainTime: 60 },
+    overlord: { name: '오버로드', cost: { minerals: 100, gas: 0 }, supply: 0, supplyProvided: 8, hp: 200, maxHp: 200, speed: 1.5, size: 18, color: '#774466', canAttack: false, trainTime: 40 },
     // ===== 프로토스 =====
-    probe: { name: '프로브', cost: { minerals: 50, gas: 0 }, supply: 1, hp: 20, maxHp: 20, speed: 1.8, size: 11, color: '#ccaa44', canBuild: true, canMine: true },
-    zealot: { name: '질럿', cost: { minerals: 100, gas: 0 }, supply: 2, hp: 100, maxHp: 100, speed: 2.2, size: 12, color: '#4488cc', attack: 16, range: 2, canAttack: true },
-    dragoon: { name: '드라군', cost: { minerals: 125, gas: 50 }, supply: 2, hp: 100, maxHp: 100, speed: 1.5, size: 14, color: '#8866cc', attack: 20, range: 6, canAttack: true },
-    hightemplar: { name: '고위 기사', cost: { minerals: 50, gas: 150 }, supply: 2, hp: 40, maxHp: 40, speed: 1.5, size: 10, color: '#66aacc', attack: 0, range: 0, canAttack: false },
-    darktemplar: { name: '암흑 기사', cost: { minerals: 125, gas: 125 }, supply: 2, hp: 80, maxHp: 80, speed: 2.5, size: 10, color: '#334466', attack: 40, range: 2, canAttack: true },
-    archon: { name: '아콘', cost: { minerals: 0, gas: 0 }, supply: 4, hp: 350, maxHp: 350, speed: 2.2, size: 16, color: '#66c0ff', attack: 30, range: 3, canAttack: true },
-    darkarchon: { name: '다크 아콘', cost: { minerals: 0, gas: 0 }, supply: 4, hp: 300, maxHp: 300, speed: 2.2, size: 16, color: '#883366' },
-    reaver: { name: '리버', cost: { minerals: 200, gas: 100 }, supply: 4, hp: 100, maxHp: 100, speed: 1, size: 18, color: '#778899', attack: 100, range: 8, canAttack: true },
-    observer: { name: '옵저버', cost: { minerals: 25, gas: 75 }, supply: 1, hp: 60, maxHp: 60, speed: 2, size: 10, color: '#aaaaaa' },
-    shuttle: { name: '셔틀', cost: { minerals: 200, gas: 0 }, supply: 2, hp: 150, maxHp: 150, speed: 2.2, size: 14, color: '#ddddaa' },
-    corsair: { name: '커세어', cost: { minerals: 150, gas: 100 }, supply: 2, hp: 100, maxHp: 100, speed: 3, size: 12, color: '#66aadd', attack: 16, range: 6, canAttack: true },
-    carrier: { name: '캐리어', cost: { minerals: 350, gas: 250 }, supply: 6, hp: 300, maxHp: 300, speed: 1.5, size: 20, color: '#ccbb77', attack: 40, range: 8, canAttack: true },
-    arbiter: { name: '아비터', cost: { minerals: 100, gas: 350 }, supply: 4, hp: 200, maxHp: 200, speed: 1.8, size: 18, color: '#99ccff', attack: 20, range: 6, canAttack: true }
+    probe: { name: '프로브', cost: { minerals: 50, gas: 0 }, supply: 1, hp: 20, maxHp: 20, speed: 1.8, size: 11, color: '#ccaa44', canBuild: true, canMine: true, trainTime: 20 },
+    zealot: { name: '질럿', cost: { minerals: 100, gas: 0 }, supply: 2, hp: 100, maxHp: 100, speed: 2.2, size: 12, color: '#4488cc', attack: 16, range: 2, canAttack: true, trainTime: 40 },
+    dragoon: { name: '드라군', cost: { minerals: 125, gas: 50 }, supply: 2, hp: 100, maxHp: 100, speed: 1.5, size: 14, color: '#8866cc', attack: 20, range: 6, canAttack: true, trainTime: 50 },
+    hightemplar: { name: '고위 기사', cost: { minerals: 50, gas: 150 }, supply: 2, hp: 40, maxHp: 40, speed: 1.5, size: 10, color: '#66aacc', attack: 0, range: 0, canAttack: false, trainTime: 55 },
+    darktemplar: { name: '암흑 기사', cost: { minerals: 125, gas: 125 }, supply: 2, hp: 80, maxHp: 80, speed: 2.5, size: 10, color: '#334466', attack: 40, range: 2, canAttack: true, trainTime: 55 },
+    archon: { name: '아콘', cost: { minerals: 0, gas: 0 }, supply: 4, hp: 350, maxHp: 350, speed: 2.2, size: 16, color: '#66c0ff', attack: 30, range: 3, canAttack: true, trainTime: 12 },
+    darkarchon: { name: '다크 아콘', cost: { minerals: 0, gas: 0 }, supply: 4, hp: 300, maxHp: 300, speed: 2.2, size: 16, color: '#883366', trainTime: 12 },
+    reaver: { name: '리버', cost: { minerals: 200, gas: 100 }, supply: 4, hp: 100, maxHp: 100, speed: 1, size: 18, color: '#778899', attack: 100, range: 8, canAttack: true, trainTime: 70 },
+    observer: { name: '옵저버', cost: { minerals: 25, gas: 75 }, supply: 1, hp: 60, maxHp: 60, speed: 2, size: 10, color: '#aaaaaa', trainTime: 40 },
+    shuttle: { name: '셔틀', cost: { minerals: 200, gas: 0 }, supply: 2, hp: 150, maxHp: 150, speed: 2.2, size: 14, color: '#ddddaa', trainTime: 60 },
+    corsair: { name: '커세어', cost: { minerals: 150, gas: 100 }, supply: 2, hp: 100, maxHp: 100, speed: 3, size: 12, color: '#66aadd', attack: 16, range: 6, canAttack: true, trainTime: 40 },
+    carrier: { name: '캐리어', cost: { minerals: 350, gas: 250 }, supply: 6, hp: 300, maxHp: 300, speed: 1.5, size: 20, color: '#ccbb77', attack: 40, range: 8, canAttack: true, trainTime: 120 },
+    arbiter: { name: '아비터', cost: { minerals: 100, gas: 350 }, supply: 4, hp: 200, maxHp: 200, speed: 1.8, size: 18, color: '#99ccff', attack: 20, range: 6, canAttack: true, trainTime: 160 }
 };
 
 // 건물 타입 정의 (테란 / 저그 / 프로토스)
@@ -133,11 +347,12 @@ const buildingTypes = {
     'greater-spire': { name: '그레이터 스파이어', cost: { minerals: 100, gas: 150 }, size: 52, hp: 750, maxHp: 750, color: '#553355', canTrain: ['guardian', 'devourer'] },
     'ultralisk-cavern': { name: '울트라리스크 동굴', cost: { minerals: 150, gas: 200 }, size: 54, hp: 900, maxHp: 900, color: '#663322', canTrain: ['ultralisk'] },
     'defiler-mound': { name: '디파일러 마운드', cost: { minerals: 100, gas: 100 }, size: 50, hp: 600, maxHp: 600, color: '#553344', canTrain: ['defiler'] },
-    'queen-nest': { name: '여왕 둥지', cost: { minerals: 150, gas: 100 }, size: 48, hp: 700, maxHp: 700, color: '#552233', canTrain: [] },
+    'queen-nest': { name: '여왕 둥지', cost: { minerals: 150, gas: 100 }, size: 48, hp: 700, maxHp: 700, color: '#552233', canTrain: ['queen'] },
     'nydus-canal': { name: '나이더스 관문', cost: { minerals: 150, gas: 0 }, size: 44, hp: 500, maxHp: 500, color: '#441122', canTrain: [] },
     'creep-colony': { name: '크립 콜로니', cost: { minerals: 75, gas: 0 }, size: 34, hp: 400, maxHp: 400, color: '#443322', canTrain: [] },
     'sunken-colony': { name: '선큰 콜로니', cost: { minerals: 50, gas: 0 }, size: 36, hp: 300, maxHp: 300, color: '#553322', canTrain: [] },
     'spore-colony': { name: '스포어 콜로니', cost: { minerals: 50, gas: 0 }, size: 36, hp: 300, maxHp: 300, color: '#335544', canTrain: [] },
+    'extractor': { name: '익스트랙터', cost: { minerals: 50, gas: 0 }, size: 44, hp: 750, maxHp: 750, color: '#445533', canTrain: [] },
     // ===== 프로토스 =====
     'nexus': { name: '넥서스', cost: { minerals: 400, gas: 0 }, size: 62, hp: 1500, maxHp: 1500, color: '#334466', canTrain: ['probe'] },
     'pylon': { name: '수정탑', cost: { minerals: 100, gas: 0 }, size: 32, hp: 300, maxHp: 300, color: '#556688', canTrain: [], supplyProvided: 8 },
@@ -160,13 +375,14 @@ const buildingTypes = {
 // 주요 업그레이드 정의 (간단 버전)
 // 실제 스타1처럼 세부 단계는 아니고, 한 번 클릭 시 전역 스탯을 증가시키는 형태
 const buildingUpgrades = {
-    // 테란
+    // 테란 (researchTime: 게임 초)
     'engineering-bay': [
         {
             id: 'terranInfantryWeapons',
             label: '보병 공격 업그레이드 (+2)',
             minerals: 100,
             gas: 100,
+            researchTime: 60,
             apply: function () {
                 unitTypes.marine.attack += 2;
                 unitTypes.firebat.attack += 2;
@@ -180,6 +396,7 @@ const buildingUpgrades = {
             label: '기계/공중 공격 업그레이드 (+4)',
             minerals: 150,
             gas: 150,
+            researchTime: 60,
             apply: function () {
                 unitTypes.vulture.attack += 4;
                 unitTypes.tank.attack += 4;
@@ -197,6 +414,7 @@ const buildingUpgrades = {
             label: '지상 공격 업그레이드 (+2)',
             minerals: 100,
             gas: 100,
+            researchTime: 60,
             apply: function () {
                 unitTypes.zergling.attack += 2;
                 unitTypes.hydralisk.attack += 2;
@@ -212,6 +430,7 @@ const buildingUpgrades = {
             label: '지상 공격 업그레이드 (+2)',
             minerals: 100,
             gas: 100,
+            researchTime: 60,
             apply: function () {
                 unitTypes.zealot.attack += 2;
                 unitTypes.dragoon.attack += 2;
@@ -266,6 +485,7 @@ var RACE_CONFIG = {
             { type: 'ultralisk', label: '울트라' }, { type: 'defiler', label: '디파일러' }, { type: 'queen', label: '퀸' }, { type: 'overlord', label: '오버로드' },
             // 건물
             { type: 'hatchery', label: '부화장' }, { type: 'lair', label: '레어' }, { type: 'hive', label: '하이브' },
+            { type: 'extractor', label: '익스트랙터' },
             { type: 'spawning-pool', label: '번식지' }, { type: 'evolution-chamber', label: '진화실' }, { type: 'hydralisk-den', label: '히드라 굴' },
             { type: 'queen-nest', label: '여왕 둥지' }, { type: 'spire', label: '둥지탑' }, { type: 'greater-spire', label: '그레이터 스파이어' },
             { type: 'ultralisk-cavern', label: '울트라 동굴' }, { type: 'defiler-mound', label: '디파일러 마운드' },
@@ -308,39 +528,55 @@ function getBuildingDisplay(buildingType) {
 // 스타크래프트 스타일 스프라이트 (SVG 데이터)
 var unitSprites = {};
 var buildingSprites = {};
-// 애셋 이미지 (assets/unit 폴더) - 유닛 타입별 이미지 매칭
+// 유닛 타입 → assets/unit 파일명 매칭 (타입과 파일명이 다를 때만)
+var UNIT_IMAGE_NAME = {
+    hightemplar: 'high-templar',
+    darktemplar: 'dark-templar',
+    darkarchon: 'dark-archon',
+    reaver: 'reaver1'
+};
+
+// 건물 타입 → assets/building 파일명 매칭
+var BUILDING_IMAGE_NAME = {
+    'supply-depot': 'supply_depot',
+    'templar-archives': 'templar-archive'
+};
+
+// 애셋 이미지 (assets/unit) - 유닛 타입별 이미지 매칭
 var unitAssetImages = {};
 (function initUnitAssetImages() {
     for (var k in unitTypes) unitAssetImages[k] = null;
 })();
 (function loadUnitAssets() {
-    var exts = ['jpg', 'png'];
+    var exts = ['png', 'jpg', 'gif'];
     for (var type in unitTypes) {
         (function (unitType) {
+            var fileName = (UNIT_IMAGE_NAME[unitType] != null) ? UNIT_IMAGE_NAME[unitType] : unitType;
             function tryLoad(extIdx) {
                 if (extIdx >= exts.length) return;
                 var img = new Image();
                 img.onload = function() { unitAssetImages[unitType] = img; };
                 img.onerror = function() { tryLoad(extIdx + 1); };
-                img.src = 'assets/unit/' + unitType + '.' + exts[extIdx];
+                img.src = 'assets/unit/' + fileName + '.' + exts[extIdx];
             }
             tryLoad(0);
         })(type);
     }
 })();
 
-// 건물 애셋 이미지 (모든 건물 타입 공통 로딩)
+// 건물 애셋 이미지 (assets/building) - 건물 타입별 이미지 매칭
 var buildingAssetImages = {};
 (function loadBuildingAssets() {
-    var exts = ['jpg', 'png'];
+    var exts = ['png', 'jpg', 'gif'];
     for (var key in buildingTypes) {
         (function (bType) {
+            var fileName = (BUILDING_IMAGE_NAME[bType] != null) ? BUILDING_IMAGE_NAME[bType] : bType;
             function tryLoad(extIdx) {
                 if (extIdx >= exts.length) return;
                 var img = new Image();
                 img.onload = function() { buildingAssetImages[bType] = img; };
                 img.onerror = function() { tryLoad(extIdx + 1); };
-                img.src = 'assets/building/' + bType + '.' + exts[extIdx];
+                img.src = 'assets/building/' + fileName + '.' + exts[extIdx];
             }
             buildingAssetImages[bType] = null;
             tryLoad(0);
@@ -442,13 +678,17 @@ class Unit {
 
     update() {
         if (this.insideBunker) return;
-        // 이동
+        // 이동 (장벽 통과 불가)
         const dx = this.targetX - this.x;
         const dy = this.targetY - this.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist > 2) {
-            this.x += (dx / dist) * this.data.speed;
-            this.y += (dy / dist) * this.data.speed;
+            var nx = this.x + (dx / dist) * this.data.speed;
+            var ny = this.y + (dy / dist) * this.data.speed;
+            if (!isPointInBarrier(nx, ny)) {
+                this.x = nx;
+                this.y = ny;
+            }
         }
 
         // SCV 미네랄/가스 채굴 (플레이어)
@@ -621,12 +861,13 @@ class Unit {
 
     // 적 SCV 전용: 적 기지 근처 자원만 채굴 → 적 자원에 반납
     updateEnemyMining() {
-        var enemyCC = gameState.enemyBuildings.find(function(b) { return b.type === 'command-center'; });
+        var mainType = (RACE_CONFIG[gameState.enemyRace] && RACE_CONFIG[gameState.enemyRace].mainBuilding) || 'command-center';
+        var enemyCC = gameState.enemyBuildings.find(function(b) { return b.type === mainType; });
         if (!enemyCC) return;
         var baseDist = 380;
         function nearEnemyBase(r) {
-            var dx = r.x - ENEMY_BASE_X;
-            var dy = r.y - ENEMY_BASE_Y;
+            var dx = r.x - gameState.enemyBase.x;
+            var dy = r.y - gameState.enemyBase.y;
             return (dx * dx + dy * dy) < baseDist * baseDist;
         }
         if (this.minePhase === 'idle') {
@@ -719,6 +960,8 @@ class Unit {
     // 미네랄 채굴 명령 (우클릭 자원)
     startMining(resource, depotBuilding) {
         if (!this.data.canMine || this.team !== 'player') return;
+        // 가스는 가스 위에 정제소/익스트랙터/어시밀레이터가 있어야만 채취 가능
+        if (resource && resource.type === 'gas' && !hasGasBuildingOnNode('player', resource)) return;
         this.miningTarget = resource;
         this.depot = depotBuilding;
         this.targetX = resource.x;
@@ -735,6 +978,11 @@ class Unit {
         }
 
         if (this.minePhase === 'to_mineral' && this.miningTarget) {
+            if (this.miningTarget.type === 'gas' && !hasGasBuildingOnNode('player', this.miningTarget)) {
+                this.miningTarget = null;
+                this.minePhase = 'idle';
+                return;
+            }
             var d = Math.sqrt((this.x - this.miningTarget.x) * (this.x - this.miningTarget.x) + (this.y - this.miningTarget.y) * (this.y - this.miningTarget.y));
             if (d < 35) {
                 this.minePhase = 'mining';
@@ -812,6 +1060,8 @@ class Building {
         this.id = Math.random().toString(36).substr(2, 9);
         this.team = team;
         this.garrison = (type === 'bunker') ? [] : null;
+        // 생산 큐: [{ unitType, remaining }] (remaining = 남은 프레임)
+        this.productionQueue = [];
     }
 
     draw() {
@@ -934,6 +1184,7 @@ class Resource {
 
     draw() {
         if (this.amount <= 0) return;
+        if (!isExploredWorld(this.x, this.y)) return;
         const screenX = this.x - gameState.camera.x;
         const screenY = this.y - gameState.camera.y;
         var w = this.sizeW;
@@ -988,55 +1239,48 @@ class Resource {
     }
 }
 
-// 초기 자원 생성: 미네랄 10덩어리, 가스 2개 (한 덩어리당 최대 10만)
+// 각 지점(시작 8곳 + 중앙)에 미네랄·가스 생성
 function initResources() {
     gameState.resources = [];
     var mineralAngles = [0, 72, 144, 216, 288];
-    for (var i = 0; i < 5; i++) {
-        var rad = (mineralAngles[i] * Math.PI) / 180;
-        var dist = 130 + (i % 2) * 25;
-        gameState.resources.push(new Resource(
-            PLAYER_BASE_X + Math.cos(rad) * dist,
-            PLAYER_BASE_Y + Math.sin(rad) * dist,
-            'mineral'
-        ));
+    var positions = getAllStartPositions().concat([{ x: MAP_CX, y: MAP_CY, clock: 'center' }]);
+    for (var p = 0; p < positions.length; p++) {
+        var pos = positions[p];
+        for (var i = 0; i < 5; i++) {
+            var rad = (mineralAngles[i] * Math.PI) / 180;
+            var dist = 130 + (i % 2) * 25;
+            gameState.resources.push(new Resource(pos.x + Math.cos(rad) * dist, pos.y + Math.sin(rad) * dist, 'mineral'));
+        }
+        var gasAngle = (pos.clock === 'center') ? 0 : (pos.clock * 30 - 90) * Math.PI / 180;
+        var gasDist = 200;
+        gameState.resources.push(new Resource(pos.x + Math.cos(gasAngle) * gasDist, pos.y + Math.sin(gasAngle) * gasDist, 'gas'));
     }
-    for (var j = 0; j < 5; j++) {
-        var r = (mineralAngles[j] * Math.PI) / 180;
-        var d = 130 + (j % 2) * 25;
-        gameState.resources.push(new Resource(
-            ENEMY_BASE_X + Math.cos(r) * d,
-            ENEMY_BASE_Y + Math.sin(r) * d,
-            'mineral'
-        ));
-    }
-    gameState.resources.push(new Resource(PLAYER_BASE_X + 200, PLAYER_BASE_Y, 'gas'));
-    gameState.resources.push(new Resource(ENEMY_BASE_X - 200, ENEMY_BASE_Y, 'gas'));
 }
 
 // 초기 건물 생성 (종족별)
 function initBuildings() {
     var cfg = RACE_CONFIG[gameState.playerRace] || RACE_CONFIG.terran;
-    gameState.buildings.push(new Building(PLAYER_BASE_X, PLAYER_BASE_Y, cfg.mainBuilding, 'player'));
-    gameState.enemyBuildings.push(new Building(ENEMY_BASE_X, ENEMY_BASE_Y, 'command-center', 'enemy'));
+    var ecfg = RACE_CONFIG[gameState.enemyRace] || RACE_CONFIG.terran;
+    gameState.buildings.push(new Building(gameState.playerBase.x, gameState.playerBase.y, cfg.mainBuilding, 'player'));
+    gameState.enemyBuildings.push(new Building(gameState.enemyBase.x, gameState.enemyBase.y, ecfg.mainBuilding, 'enemy'));
 }
 
 // 초기 유닛 생성 (종족별)
 function initUnits() {
     var cfg = RACE_CONFIG[gameState.playerRace] || RACE_CONFIG.terran;
+    var ecfg = RACE_CONFIG[gameState.enemyRace] || RACE_CONFIG.terran;
     for (var i = 0; i < 5; i++) {
-        gameState.units.push(new Unit(PLAYER_BASE_X + 50 + i * 30, PLAYER_BASE_Y + 50, cfg.worker, 'player'));
+        gameState.units.push(new Unit(gameState.playerBase.x + 50 + i * 30, gameState.playerBase.y + 50, cfg.worker, 'player'));
     }
-    // 상대방은 처음에 일꾼(SCV)만 보유, 공격 유닛 없음
     var enemySupplyCount = 0;
-    for (let i = 0; i < 3; i++) {
+    for (var i = 0; i < 3; i++) {
         gameState.enemyUnits.push(new Unit(
-            ENEMY_BASE_X - 60 + i * 28,
-            ENEMY_BASE_Y - 120,
-            'scv',
+            gameState.enemyBase.x - 60 + i * 28,
+            gameState.enemyBase.y - 120,
+            ecfg.worker,
             'enemy'
         ));
-        enemySupplyCount += 1;
+        enemySupplyCount += (unitTypes[ecfg.worker] && unitTypes[ecfg.worker].supply) ? unitTypes[ecfg.worker].supply : 1;
     }
     gameState.enemySupply.current = enemySupplyCount;
 }
@@ -1050,8 +1294,12 @@ function createEnemyUnit(type) {
     gameState.enemyMinerals -= unitData.cost.minerals;
     gameState.enemyGas -= unitData.cost.gas;
     gameState.enemySupply.current += unitData.supply;
-    var bx = ENEMY_BASE_X - 80 - gameState.enemyUnits.length * 20;
-    var by = ENEMY_BASE_Y - 60 - (gameState.enemyUnits.length % 2) * 30;
+    if (unitData.supplyProvided) {
+        gameState.enemySupply.max += unitData.supplyProvided;
+        if (gameState.enemySupply.max > MAX_SUPPLY) gameState.enemySupply.max = MAX_SUPPLY;
+    }
+    var bx = gameState.enemyBase.x - 80 - gameState.enemyUnits.length * 20;
+    var by = gameState.enemyBase.y - 60 - (gameState.enemyUnits.length % 2) * 30;
     gameState.enemyUnits.push(new Unit(bx, by, type, 'enemy'));
     return true;
 }
@@ -1062,8 +1310,8 @@ function buildEnemyBuilding(type) {
     if (!bd || gameState.enemyMinerals < bd.cost.minerals || gameState.enemyGas < bd.cost.gas) return false;
     gameState.enemyMinerals -= bd.cost.minerals;
     gameState.enemyGas -= bd.cost.gas;
-    var ox = ENEMY_BASE_X - 150 - gameState.enemyBuildings.length * 70;
-    var oy = ENEMY_BASE_Y - 100;
+    var ox = gameState.enemyBase.x - 150 - gameState.enemyBuildings.length * 70;
+    var oy = gameState.enemyBase.y - 100;
     var b = new Building(ox, oy, type, 'enemy');
     gameState.enemyBuildings.push(b);
     // 적도 보급고/오버로드 등의 보급 건물 효과를 받도록 처리
@@ -1175,6 +1423,8 @@ function runEnemyAI() {
 function selectUnits(x, y, isBox = false, boxEndX = null, boxEndY = null) {
     gameState.selectedUnits.forEach(unit => unit.selected = false);
     gameState.selectedUnits = [];
+    // 건물 선택 초기화는 한 번만
+    gameState.buildings.forEach(b => b.selected = false);
 
     const worldX = x + gameState.camera.x;
     const worldY = y + gameState.camera.y;
@@ -1209,15 +1459,21 @@ function selectUnits(x, y, isBox = false, boxEndX = null, boxEndY = null) {
 
         // 건물 선택
         if (!found) {
-            gameState.buildings.forEach(building => {
-                building.selected = false;
+            // forEach로 계속 초기화되며 선택이 풀리는 버그가 있어 find로 처리
+            var clicked = null;
+            for (var bi = 0; bi < gameState.buildings.length; bi++) {
+                var building = gameState.buildings[bi];
                 const dx = building.x - worldX;
                 const dy = building.y - worldY;
                 if (Math.abs(dx) < building.data.size / 2 && Math.abs(dy) < building.data.size / 2) {
-                    building.selected = true;
-                    found = true;
+                    clicked = building;
+                    break;
                 }
-            });
+            }
+            if (clicked) {
+                clicked.selected = true;
+                found = true;
+            }
         }
     }
 
@@ -1229,26 +1485,185 @@ function selectUnits(x, y, isBox = false, boxEndX = null, boxEndY = null) {
     }
 }
 
+// 선택 유닛 슬롯 최대 12개
+var MAX_UNIT_SLOTS = 12;
+
+// 하단 중앙 유닛 슬롯 12칸 갱신 (드래그로 선택한 유닛 최대 12개 표시)
+function updateUnitSlots() {
+    var container = document.getElementById('unit-slots');
+    if (!container) return;
+    var list = gameState.selectedUnits.filter(function(u) { return u.team === 'player'; });
+    var show = list.slice(0, MAX_UNIT_SLOTS);
+
+    while (container.children.length < MAX_UNIT_SLOTS) {
+        var slot = document.createElement('button');
+        slot.type = 'button';
+        slot.className = 'unit-slot empty';
+        slot.setAttribute('data-slot-index', container.children.length);
+        slot.innerHTML = '<span class="slot-name">—</span><span class="slot-hp"></span>';
+        container.appendChild(slot);
+    }
+
+    for (var i = 0; i < MAX_UNIT_SLOTS; i++) {
+        var el = container.children[i];
+        var unit = show[i] || null;
+        el.classList.toggle('empty', !unit);
+        el.classList.remove('selected-slot');
+            if (unit) {
+                var name = getUnitDisplay(unit.type).name || unit.data.name || unit.type;
+                el.querySelector('.slot-name').textContent = name;
+                el.querySelector('.slot-hp').textContent = Math.ceil(unit.hp) + '/' + unit.maxHp;
+                el.setAttribute('data-unit-id', unit.id);
+                if (show.length === 1) el.classList.add('selected-slot');
+            } else {
+                el.querySelector('.slot-name').textContent = '—';
+                el.querySelector('.slot-hp').textContent = '';
+                el.removeAttribute('data-unit-id');
+            }
+    }
+
+    // 슬롯 클릭: 해당 유닛만 선택
+    for (var j = 0; j < container.children.length; j++) {
+        var s = container.children[j];
+        s.onclick = null;
+        (function(slot, idx) {
+            slot.onclick = function() {
+                var u = show[idx];
+                if (!u) return;
+                gameState.selectedUnits.forEach(function(x) { x.selected = false; });
+                gameState.buildings.forEach(function(b) { b.selected = false; });
+                u.selected = true;
+                gameState.selectedUnits = [u];
+                updateInfoPanel();
+                if (typeof Sound !== 'undefined') Sound.select();
+            };
+        })(s, j);
+    }
+}
+
 // 정보 패널 업데이트
 function updateInfoPanel() {
+    updateUnitSlots();
     const infoPanel = document.getElementById('selected-info');
+    if (!infoPanel) return;
     infoPanel.innerHTML = '';
 
     if (gameState.selectedUnits.length > 0) {
-        const unit = gameState.selectedUnits[0];
-        infoPanel.innerHTML = `
-            <div class="unit-info">
-                <div class="unit-name">${unit.team === 'player' ? getUnitDisplay(unit.type).name : unit.data.name}</div>
-                <div class="unit-stats">
-                    <div class="stat">❤️ ${Math.ceil(unit.hp)}/${unit.maxHp}</div>
-                    ${unit.data.attack ? `<div class="stat">⚔️ 공격력: ${unit.data.attack}</div>` : ''}
-                    ${unit.data.canMine ? '<div class="stat">⛏️ 채굴 가능</div>' : ''}
+        // 여러 유닛이 선택된 경우: 타입별로 묶어서 간단 리스트 표시
+        if (gameState.selectedUnits.length > 1) {
+            const groups = {};
+            gameState.selectedUnits.forEach(u => {
+                if (u.team !== 'player') return;
+                const key = u.type;
+                if (!groups[key]) {
+                    groups[key] = { count: 0, sample: u };
+                }
+                groups[key].count++;
+            });
+
+            const entries = Object.keys(groups).map(type => {
+                const g = groups[type];
+                const u = g.sample;
+                const name = getUnitDisplay(type).name || u.data.name || type;
+                return `
+                    <button type="button" class="multi-unit-row" data-unit-type="${type}" title="클릭: 해당 유닛만 선택 / Ctrl: 추가·해제">
+                        <span class="multi-unit-name">${name}</span>
+                        <span class="multi-unit-count">x ${g.count}</span>
+                    </button>
+                `;
+            }).join('');
+
+            infoPanel.innerHTML = `
+                <div class="unit-info">
+                    <div class="unit-name">선택 유닛: ${gameState.selectedUnits.length}기</div>
+                    <div class="unit-stats multi-unit-list">
+                        ${entries}
+                    </div>
                 </div>
-            </div>
-        `;
+            `;
+
+            // 목록에서 원하는 유닛 타입을 클릭해서 선택 필터링
+            infoPanel.querySelectorAll('.multi-unit-row[data-unit-type]').forEach(function(btn) {
+                btn.addEventListener('click', function(e) {
+                    var t = btn.getAttribute('data-unit-type');
+                    if (!t) return;
+                    var want = gameState.selectedUnits.filter(function(u) { return u.team === 'player' && u.type === t; });
+                    if (want.length === 0) return;
+
+                    // Ctrl/Meta: 해당 타입을 선택에 토글(추가/해제)
+                    if (e.ctrlKey || e.metaKey) {
+                        var allSelected = want.every(function(u) { return u.selected; });
+                        if (allSelected) {
+                            // 해제
+                            want.forEach(function(u) { u.selected = false; });
+                            gameState.selectedUnits = gameState.selectedUnits.filter(function(u) { return !(u.team === 'player' && u.type === t); });
+                        } else {
+                            // 추가(이미 선택된 것 유지)
+                            want.forEach(function(u) { u.selected = true; });
+                            // 중복 없이 재구성
+                            var seen = new Set();
+                            var next = [];
+                            gameState.selectedUnits.forEach(function(u) {
+                                if (!u || !u.id) return;
+                                if (!seen.has(u.id)) { seen.add(u.id); next.push(u); }
+                            });
+                            want.forEach(function(u) {
+                                if (!u || !u.id) return;
+                                if (!seen.has(u.id)) { seen.add(u.id); next.push(u); }
+                            });
+                            gameState.selectedUnits = next;
+                        }
+                    } else {
+                        // 기본: 해당 타입만 선택
+                        gameState.selectedUnits.forEach(function(u) { u.selected = false; });
+                        want.forEach(function(u) { u.selected = true; });
+                        gameState.selectedUnits = want;
+                    }
+                    updateInfoPanel();
+                    if (typeof Sound !== 'undefined') Sound.select();
+                });
+            });
+        } else {
+            // 한 기만 선택된 경우: 기존 상세 정보
+            const unit = gameState.selectedUnits[0];
+            infoPanel.innerHTML = `
+                <div class="unit-info">
+                    <div class="unit-name">${unit.team === 'player' ? getUnitDisplay(unit.type).name : unit.data.name}</div>
+                    <div class="unit-stats">
+                        <div class="stat">❤️ ${Math.ceil(unit.hp)}/${unit.maxHp}</div>
+                        ${unit.data.attack ? `<div class="stat">⚔️ 공격력: ${unit.data.attack}</div>` : ''}
+                        ${unit.data.canMine ? '<div class="stat">⛏️ 채굴 가능</div>' : ''}
+                    </div>
+                </div>
+            `;
+        }
     } else if (gameState.buildings.some(b => b.selected)) {
         const building = gameState.buildings.find(b => b.selected);
         var garrisonText = (building.garrison && building.type === 'bunker') ? `<div class="stat">🚪 수용: ${building.garrison.length}/${BUNKER_CAPACITY}</div>` : '';
+        var upgradeText = '';
+        var ups = buildingUpgrades[building.type];
+        if (ups && ups.length && building.team === 'player') {
+            var upLines = ups.map(function(up) {
+                var done = gameState.upgrades[up.id];
+                if (done) {
+                    return '<div class="stat upgrade-done">🔧 ' + up.label + ' (완료)</div>';
+                }
+                return '<div class="stat upgrade-avail">🔧 ' + up.label + ' — 💎' + (up.minerals || 0) + ' / ⛽' + (up.gas || 0) + '</div>';
+            }).join('');
+            upgradeText = '<div class="upgrade-section"><div class="stat upgrade-title">업그레이드</div>' + upLines + '</div>';
+        }
+        var productionText = '';
+        if (building.productionQueue && building.productionQueue.length > 0 && building.team === 'player') {
+            var first = building.productionQueue[0];
+            var name = getUnitDisplay(first.unitType).name || unitTypes[first.unitType].name || first.unitType;
+            var sec = Math.ceil(first.remaining / FRAMES_PER_GAME_SEC);
+            productionText = '<div class="stat production-queue">⏱️ 생산 중: ' + name + ' (' + sec + '초)</div>';
+        }
+        var researchText = '';
+        if (gameState.researching && building.team === 'player') {
+            var sec = Math.ceil(gameState.researching.remaining / FRAMES_PER_GAME_SEC);
+            researchText = '<div class="stat research-progress">🔬 연구 중: ' + gameState.researching.label + ' (' + sec + '초)</div>';
+        }
         infoPanel.innerHTML = `
             <div class="unit-info">
                 <div class="unit-name">${building.team === 'player' ? getBuildingDisplay(building.type).name : building.data.name}</div>
@@ -1256,6 +1671,9 @@ function updateInfoPanel() {
                     <div class="stat">❤️ ${Math.ceil(building.hp)}/${building.maxHp}</div>
                     ${garrisonText}
                     ${building.data.canTrain ? `<div class="stat">🏭 훈련: ${building.data.canTrain.join(', ')}</div>` : ''}
+                    ${productionText}
+                    ${researchText}
+                    ${upgradeText}
                 </div>
             </div>
         `;
@@ -1285,9 +1703,8 @@ function updateBuildPanel() {
                 btn.setAttribute('data-unit', unitType);
                 btn.textContent = getUnitDisplay(unitType).name || uData.name || unitType;
                 btn.onclick = function() {
-                    if (typeof Sound !== 'undefined') Sound.click();
-                    // 선택된 건물에서 바로 해당 유닛을 생산
-                    createUnit(unitType, selectedBuilding.x + 55, selectedBuilding.y);
+                    queueUnit(selectedBuilding, unitType);
+                    updateInfoPanel();
                 };
                 panel.appendChild(btn);
             });
@@ -1299,17 +1716,23 @@ function updateBuildPanel() {
             ups.forEach(function(up) {
                 var btn = document.createElement('button');
                 btn.className = 'build-btn';
-                btn.textContent = up.label;
                 var level = gameState.upgrades[up.id] || 0;
+                var researching = gameState.researching && gameState.researching.id === up.id;
                 if (level > 0) {
                     btn.disabled = true;
                     btn.textContent = up.label + ' (완료)';
+                } else if (researching) {
+                    btn.disabled = true;
+                    var sec = Math.ceil(gameState.researching.remaining / FRAMES_PER_GAME_SEC);
+                    btn.textContent = up.label + ' (연구 중 ' + sec + '초)';
+                } else {
+                    btn.textContent = up.label;
+                    btn.onclick = function() {
+                        if (btn.disabled) return;
+                        performUpgrade(up, btn, selectedBuilding);
+                        updateInfoPanel();
+                    };
                 }
-                btn.onclick = function() {
-                    if (btn.disabled) return;
-                    if (typeof Sound !== 'undefined') Sound.click();
-                    performUpgrade(up, btn);
-                };
                 panel.appendChild(btn);
             });
         }
@@ -1349,34 +1772,68 @@ function updateResources() {
     document.getElementById('supply').textContent = `${gameState.supply.current}/${gameState.supply.max}`;
 }
 
-// 업그레이드 수행
-function performUpgrade(up, btnElement) {
+// 업그레이드 시작 (연구 시간이 지나면 완료됨)
+function performUpgrade(up, btnElement, building) {
     var m = up.minerals || 0;
     var g = up.gas || 0;
     if (gameState.minerals < m || gameState.gas < g) {
         if (typeof Sound !== 'undefined') Sound.error();
         return;
     }
-    if (gameState.upgrades[up.id]) {
-        return;
-    }
+    if (gameState.upgrades[up.id]) return;
+    if (gameState.researching) return;
     gameState.minerals -= m;
     gameState.gas -= g;
-    gameState.upgrades[up.id] = 1;
-    if (typeof up.apply === 'function') {
-        up.apply();
-    }
+    var frames = (up.researchTime || 60) * FRAMES_PER_GAME_SEC;
+    gameState.researching = { id: up.id, label: up.label, remaining: frames, total: frames, up: up, buildingId: building ? building.id : null };
     updateResources();
-    if (btnElement) {
-        btnElement.disabled = true;
-        btnElement.textContent = up.label + ' (완료)';
-    }
-    if (typeof Sound !== 'undefined') Sound.build();
+    if (btnElement) btnElement.disabled = true;
+    if (typeof Sound !== 'undefined') Sound.click();
 }
 
 // 건물 건설
 function buildBuilding(x, y, type) {
     const buildingData = buildingTypes[type];
+    if (isPointInBarrier(x, y)) {
+        if (typeof Sound !== 'undefined') Sound.error();
+        return false;
+    }
+    var excludeResource = null;
+    // 가스 건물은 반드시 가스 노드 위에만 설치(스냅)
+    var gasTypes = ['refinery', 'assimilator', 'extractor'];
+    if (gasTypes.indexOf(type) >= 0) {
+        var node = findGasNodeNear(x, y, 70);
+        if (!node) {
+            if (typeof Sound !== 'undefined') Sound.error();
+            return false;
+        }
+        if (hasGasBuildingOnNode('player', node)) {
+            if (typeof Sound !== 'undefined') Sound.error();
+            return false;
+        }
+        x = node.x;
+        y = node.y;
+        excludeResource = node;
+    }
+    // 미네랄/가스에 바로 붙여서 건설 불가 (가스 건물은 자기 가스 노드는 제외)
+    if (isTooCloseToResource(x, y, excludeResource)) {
+        if (typeof Sound !== 'undefined') Sound.error();
+        return false;
+    }
+    // 저그: 크립 위에만 건설 (부화장/레어/하이브/익스트랙터는 예외)
+    var race = gameState.playerRace || 'terran';
+    if (race === 'zerg') {
+        var zergExempt = ['hatchery', 'lair', 'hive', 'extractor'];
+        if (zergExempt.indexOf(type) < 0 && !isOnCreep(x, y)) {
+            if (typeof Sound !== 'undefined') Sound.error();
+            return false;
+        }
+    }
+    // 프로토스: 수정탑(파일론) 범위 내에만 건설 (넥서스는 예외)
+    if (race === 'protoss' && type !== 'nexus' && !isInPylonRange(x, y)) {
+        if (typeof Sound !== 'undefined') Sound.error();
+        return false;
+    }
     if (gameState.minerals >= buildingData.cost.minerals &&
         gameState.gas >= buildingData.cost.gas) {
         gameState.minerals -= buildingData.cost.minerals;
@@ -1404,30 +1861,84 @@ function findTrainBuilding(unitType) {
     return null;
 }
 
-// 유닛 생성
-function createUnit(type, x, y) {
+// 유닛 생성 (fromQueue: true면 자원 차감 없이 큐 완료 처리로만 생성)
+function createUnit(type, x, y, fromQueue) {
     const unitData = unitTypes[type];
     var supplyOk = unitData.supplyProvided
         ? (gameState.supply.current <= gameState.supply.max)
         : (gameState.supply.current + unitData.supply <= gameState.supply.max);
-    if (gameState.minerals >= unitData.cost.minerals &&
-        gameState.gas >= unitData.cost.gas && supplyOk) {
+    if (!fromQueue && (gameState.minerals < unitData.cost.minerals || gameState.gas < unitData.cost.gas || !supplyOk)) {
+        if (typeof Sound !== 'undefined') Sound.error();
+        return false;
+    }
+    if (!fromQueue) {
         gameState.minerals -= unitData.cost.minerals;
         gameState.gas -= unitData.cost.gas;
-        if (!unitData.supplyProvided) {
-            gameState.supply.current += unitData.supply;
-        }
-        if (unitData.supplyProvided) {
-            gameState.supply.max += unitData.supplyProvided;
-            if (gameState.supply.max > MAX_SUPPLY) gameState.supply.max = MAX_SUPPLY;
-        }
-        gameState.units.push(new Unit(x, y, type, 'player'));
-        updateResources();
-        if (typeof Sound !== 'undefined') Sound.unitReady();
-        return true;
     }
-    if (typeof Sound !== 'undefined') Sound.error();
-    return false;
+    if (!unitData.supplyProvided) {
+        gameState.supply.current += unitData.supply;
+    }
+    if (unitData.supplyProvided) {
+        gameState.supply.max += unitData.supplyProvided;
+        if (gameState.supply.max > MAX_SUPPLY) gameState.supply.max = MAX_SUPPLY;
+    }
+    gameState.units.push(new Unit(x, y, type, 'player'));
+    updateResources();
+    if (typeof Sound !== 'undefined') Sound.unitReady();
+    return true;
+}
+
+// 유닛 훈련 큐에 추가 (자원 차감 후 건물 큐에 넣음)
+function queueUnit(building, unitType) {
+    var u = unitTypes[unitType];
+    if (!u || building.team !== 'player') return false;
+    // 저글링은 한 몫에 2마리 (비용 50, 인구 2)
+    var costM = (unitType === 'zergling') ? 50 : (u.cost.minerals || 0);
+    var costG = u.cost.gas || 0;
+    var supplyUse = (unitType === 'zergling') ? 2 : (u.supply || 0);
+    var supplyOk = u.supplyProvided ? (gameState.supply.current <= gameState.supply.max) : (gameState.supply.current + supplyUse <= gameState.supply.max);
+    if (gameState.minerals < costM || gameState.gas < costG || !supplyOk) {
+        if (typeof Sound !== 'undefined') Sound.error();
+        return false;
+    }
+    gameState.minerals -= costM;
+    gameState.gas -= costG;
+    var frames = (u.trainTime || 20) * FRAMES_PER_GAME_SEC;
+    building.productionQueue.push({ unitType: unitType, remaining: frames, total: frames });
+    updateResources();
+    if (typeof Sound !== 'undefined') Sound.click();
+    return true;
+}
+
+// 매 프레임: 생산 큐 및 연구 진행 처리
+function processProductionAndResearch() {
+    var i, b, q, u;
+    for (i = 0; i < gameState.buildings.length; i++) {
+        b = gameState.buildings[i];
+        if (!b.productionQueue || b.productionQueue.length === 0) continue;
+        q = b.productionQueue[0];
+        q.remaining--;
+        if (q.remaining <= 0) {
+            b.productionQueue.shift();
+            if (q.unitType === 'zergling') {
+                createUnit('zergling', b.x + 55, b.y, true);
+                createUnit('zergling', b.x + 77, b.y, true);
+            } else {
+                createUnit(q.unitType, b.x + 55, b.y, true);
+            }
+        }
+    }
+    if (gameState.researching) {
+        gameState.researching.remaining--;
+        if (gameState.researching.remaining <= 0) {
+            var up = gameState.researching.up;
+            gameState.upgrades[up.id] = 1;
+            if (typeof up.apply === 'function') up.apply();
+            gameState.researching = null;
+            if (typeof Sound !== 'undefined') Sound.build();
+            updateInfoPanel();
+        }
+    }
 }
 
 // 맵 그리기
@@ -1481,68 +1992,81 @@ function drawMap() {
             ctx.stroke();
         }
     }
+    // 장벽 그리기 (중앙 통과 강제)
+    ctx.fillStyle = 'rgba(60, 55, 50, 0.92)';
+    ctx.strokeStyle = 'rgba(40, 38, 35, 0.95)';
+    ctx.lineWidth = 2;
+    for (var i = 0; i < MAP_BARRIERS.length; i++) {
+        var b = MAP_BARRIERS[i];
+        var sx = b.x - cam.x - b.w / 2;
+        var sy = b.y - cam.y - b.h / 2;
+        ctx.fillRect(sx, sy, b.w, b.h);
+        ctx.strokeRect(sx, sy, b.w, b.h);
+    }
 }
 
-// 미니맵 그리기
+// 미니맵 그리기 (스타1 스타일: 안개 반영)
 function drawMinimap() {
     minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
 
     const scaleX = minimapCanvas.width / gameState.mapSize.width;
     const scaleY = minimapCanvas.height / gameState.mapSize.height;
 
-    // 자원 그리기
-    gameState.resources.forEach(resource => {
+    // 안개 레이어: 미탐험=검정, 탐험=어두운 회색, 시야=비움
+    var step = Math.max(1, Math.floor(fogW / minimapCanvas.width));
+    for (var cy = 0; cy < fogH; cy += step) {
+        for (var cx = 0; cx < fogW; cx += step) {
+            var idx = cy * fogW + cx;
+            if (fogVisible[idx] === 1) continue;
+            var mx = (cx / fogW) * minimapCanvas.width;
+            var my = (cy / fogH) * minimapCanvas.height;
+            var cellW = Math.ceil(minimapCanvas.width / fogW) + 1;
+            var cellH = Math.ceil(minimapCanvas.height / fogH) + 1;
+            minimapCtx.fillStyle = fogExplored[idx] === 1 ? 'rgba(20, 22, 18, 0.88)' : 'rgba(0, 0, 0, 1)';
+            minimapCtx.fillRect(mx, my, cellW, cellH);
+        }
+    }
+
+    // 자원 (탐험된 지역만)
+    gameState.resources.forEach(function(resource) {
+        if (!isExploredWorld(resource.x, resource.y)) return;
         minimapCtx.fillStyle = resource.type === 'mineral' ? '#4169e1' : '#00ced1';
-        minimapCtx.fillRect(
-            resource.x * scaleX - 2,
-            resource.y * scaleY - 2,
-            4,
-            4
-        );
+        minimapCtx.fillRect(resource.x * scaleX - 2, resource.y * scaleY - 2, 4, 4);
+    });
+
+    // 장벽 (탐험된 지역만)
+    minimapCtx.fillStyle = 'rgba(80, 75, 70, 0.85)';
+    MAP_BARRIERS.forEach(function(b) {
+        if (!isExploredWorld(b.x, b.y)) return;
+        var mx = b.x * scaleX - 1;
+        var my = b.y * scaleY - 1;
+        minimapCtx.fillRect(mx, my, 2, 2);
     });
 
     // 플레이어 건물
     gameState.buildings.forEach(building => {
         minimapCtx.fillStyle = '#3498db';
-        minimapCtx.fillRect(
-            building.x * scaleX - 3,
-            building.y * scaleY - 3,
-            6,
-            6
-        );
+        minimapCtx.fillRect(building.x * scaleX - 3, building.y * scaleY - 3, 6, 6);
     });
 
-    // 적 건물
+    // 적 건물 (시야 있을 때만)
     gameState.enemyBuildings.forEach(building => {
+        if (!isVisibleWorld(building.x, building.y)) return;
         minimapCtx.fillStyle = '#ff0000';
-        minimapCtx.fillRect(
-            building.x * scaleX - 3,
-            building.y * scaleY - 3,
-            6,
-            6
-        );
+        minimapCtx.fillRect(building.x * scaleX - 3, building.y * scaleY - 3, 6, 6);
     });
 
     // 플레이어 유닛
     gameState.units.forEach(unit => {
         minimapCtx.fillStyle = '#00ff00';
-        minimapCtx.fillRect(
-            unit.x * scaleX - 1,
-            unit.y * scaleY - 1,
-            2,
-            2
-        );
+        minimapCtx.fillRect(unit.x * scaleX - 1, unit.y * scaleY - 1, 2, 2);
     });
 
-    // 적 유닛
+    // 적 유닛 (시야 있을 때만)
     gameState.enemyUnits.forEach(unit => {
+        if (!isVisibleWorld(unit.x, unit.y)) return;
         minimapCtx.fillStyle = '#ff0000';
-        minimapCtx.fillRect(
-            unit.x * scaleX - 1,
-            unit.y * scaleY - 1,
-            2,
-            2
-        );
+        minimapCtx.fillRect(unit.x * scaleX - 1, unit.y * scaleY - 1, 2, 2);
     });
 
     // 카메라 뷰포트 표시
@@ -1593,6 +2117,10 @@ function render() {
 
     gameState.totalFrames++;
     gameState.enemyAITimer++;
+    processProductionAndResearch();
+    if (gameState.totalFrames % FRAMES_PER_GAME_SEC === 0 && (gameState.researching || gameState.buildings.some(function(b) { return b.productionQueue && b.productionQueue.length > 0; }))) {
+        updateInfoPanel();
+    }
     if (gameState.enemyAITimer >= 280) {
         gameState.enemyAITimer = 0;
         runEnemyAI();
@@ -1600,13 +2128,21 @@ function render() {
 
     clampCamera();
     drawMap();
+    // 시야 갱신 (스타1 스타일 안개) — 자원/적 표시 전에 갱신
+    updateFogOfWar();
 
-    // 자원 그리기
-    gameState.resources.forEach(resource => resource.draw());
+    // 자원 그리기 (탐험된 지역만 — 스타1처럼)
+    gameState.resources.forEach(function(resource) {
+        if (isExploredWorld(resource.x, resource.y)) resource.draw();
+    });
 
     // 건물 그리기
     gameState.buildings.forEach(building => building.draw());
-    gameState.enemyBuildings.forEach(building => building.draw());
+
+    // 적 건물 (시야 내에서만)
+    gameState.enemyBuildings.forEach(building => {
+        if (isVisibleWorld(building.x, building.y)) building.draw();
+    });
 
     // 유닛 그리기
     gameState.units.forEach(unit => {
@@ -1617,7 +2153,7 @@ function render() {
     // 적 유닛 업데이트 및 그리기
     gameState.enemyUnits.forEach(unit => {
         unit.update();
-        unit.draw();
+        if (isVisibleWorld(unit.x, unit.y)) unit.draw();
 
         // 적 AI - 플레이어 유닛 발견 시 공격, 일정 시간 후에만 기지로 선제 이동
         if (unit.data.canAttack && !unit.attacking) {
@@ -1638,8 +2174,8 @@ function render() {
                 unit.attack(nearest);
             } else if (gameState.totalFrames >= gameState.enemyAttackUnlockFrame) {
                 // 일정 시간(약 10초) 경과 후에만 플레이어 기지로 이동
-                unit.targetX = PLAYER_BASE_X;
-                unit.targetY = PLAYER_BASE_Y;
+                unit.targetX = gameState.playerBase.x;
+                unit.targetY = gameState.playerBase.y;
             }
         }
 
@@ -1665,6 +2201,9 @@ function render() {
             }
         }
     });
+
+    // 안개 오버레이 (가시성/탐험 반영)
+    drawFogOverlay();
 
     // 박스 선택 그리기 (맵과 어울리게)
     if (isSelecting) {
@@ -1971,11 +2510,11 @@ function stopSelectedUnits() {
     if (typeof Sound !== 'undefined') Sound.move();
 }
 
-// 명령 카드 액션 버튼 (공격, 정지, 홀드, 이동, 순찰, 메뉴)
+// 명령 카드 액션 버튼 (공격, 중지, 수리, 이동, 순찰, 메뉴)
 function setupActionButtons() {
     var btnAttack = document.getElementById('btn-attack');
     var btnStop = document.getElementById('btn-stop');
-    var btnHold = document.getElementById('btn-hold');
+    var btnRepair = document.getElementById('btn-repair');
     var btnMove = document.getElementById('btn-move');
     var btnPatrol = document.getElementById('btn-patrol');
     var btnMenu = document.getElementById('btn-menu');
@@ -1991,16 +2530,16 @@ function setupActionButtons() {
             stopSelectedUnits();
         };
     }
-    if (btnHold) {
-        btnHold.onclick = function() {
+    if (btnRepair) {
+        btnRepair.onclick = function() {
             if (typeof Sound !== 'undefined') Sound.click();
+            // 수리: SCV 등 — 현재는 정지와 동일 처리
             stopSelectedUnits();
         };
     }
     if (btnMove) {
         btnMove.onclick = function() {
             if (typeof Sound !== 'undefined') Sound.click();
-            // 이동: 맵 우클릭으로 지정 (기존 동작)
         };
     }
     if (btnPatrol) {
@@ -2039,9 +2578,10 @@ function setupBuildButtons() {
     });
 }
 
-// 종족 선택 후 게임 시작
+// 종족 선택 후 게임 시작 (시작 위치: 11·12·1·3·5·6·7·9시 중 랜덤)
 function startGame(race) {
     gameState.playerRace = race;
+    gameState.enemyRace = 'terran'; // 적 종족 (추후 랜덤/미러 가능)
     gameState.gameOver = false;
     gameState.victory = false;
     gameState.buildings = [];
@@ -2057,19 +2597,27 @@ function startGame(race) {
     gameState.enemyGas = 50;
     gameState.enemyAITimer = 0;
     gameState.upgrades = {};
+    gameState.researching = null;
     gameState.totalFrames = 0;
+    resetFog();
+    var clocks = START_CLOCKS.slice();
+    for (var i = clocks.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var t = clocks[i]; clocks[i] = clocks[j]; clocks[j] = t;
+    }
+    gameState.playerBase = getStartPosition(clocks[0]);
+    gameState.enemyBase = getStartPosition(clocks[1]);
     resizeCanvas();
     var panel = document.getElementById('build-panel');
     if (panel) {
-        // 초기에는 아무것도 선택되지 않았으므로 빌드 패널 비워둠
         panel.innerHTML = '';
     }
     initResources();
     initBuildings();
     initUnits();
     updateResources();
-    gameState.camera.x = PLAYER_BASE_X - canvas.width / 2;
-    gameState.camera.y = PLAYER_BASE_Y - canvas.height / 2;
+    gameState.camera.x = gameState.playerBase.x - canvas.width / 2;
+    gameState.camera.y = gameState.playerBase.y - canvas.height / 2;
     clampCamera();
     var menu = document.getElementById('play-menu');
     if (menu) menu.classList.add('hidden');

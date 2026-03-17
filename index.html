@@ -11,26 +11,76 @@
     <div id="play-menu" class="menu-screen">
         <div class="menu-bg"></div>
         <div class="menu-overlay"></div>
-        <div class="menu-content">
-            <h1 class="menu-title">STARCRRAFT</h1>
-            <p class="menu-subtitle">Real Time Strategy</p>
-            <div id="race-select" class="race-select-panel">
-                <h2>종족 선택</h2>
-                <p>플레이할 종족을 선택하세요</p>
-                <div id="race-buttons">
-                    <button id="race-terran" class="race-btn">
-                        <span class="race-name">테란</span>
-                        <span class="race-desc">인류. 기계와 화력.</span>
-                    </button>
-                    <button id="race-zerg" class="race-btn">
-                        <span class="race-name">저그</span>
-                        <span class="race-desc">침략 종족. 생체 유닛.</span>
-                    </button>
-                    <button id="race-protoss" class="race-btn">
-                        <span class="race-name">프로토스</span>
-                        <span class="race-desc">고등 문명. 사이오닉.</span>
-                    </button>
-                </div>
+        <div class="sc1-menu">
+            <div class="sc1-menu-header">
+                <div class="sc1-logo">STARCRRAFT</div>
+                <div class="sc1-tagline">Real Time Strategy</div>
+            </div>
+
+            <div class="sc1-menu-body">
+                <!-- 좌측: 스타1 느낌의 세로 메뉴 -->
+                <nav class="sc1-nav" aria-label="메인 메뉴">
+                    <button type="button" class="sc1-nav-btn is-active" data-target="panel-play">싱글 플레이</button>
+                    <button type="button" class="sc1-nav-btn" data-target="panel-options">옵션</button>
+                    <button type="button" class="sc1-nav-btn" data-target="panel-help">도움말</button>
+                    <button type="button" class="sc1-nav-btn" data-target="panel-exit">종료</button>
+                </nav>
+
+                <!-- 우측: 내용 패널 -->
+                <section class="sc1-panels">
+                    <div id="panel-play" class="sc1-panel is-active" role="region" aria-label="싱글 플레이">
+                        <div class="sc1-panel-title">종족 선택</div>
+                        <div class="sc1-panel-sub">플레이할 종족을 선택하세요.</div>
+                        <div class="sc1-race-grid">
+                            <button id="race-terran" class="sc1-race-card" type="button" data-race="terran">
+                                <div class="race-name">테란</div>
+                                <div class="race-desc">인류 · 기계 · 화력</div>
+                            </button>
+                            <button id="race-zerg" class="sc1-race-card" type="button" data-race="zerg">
+                                <div class="race-name">저그</div>
+                                <div class="race-desc">군체 · 생체 · 물량</div>
+                            </button>
+                            <button id="race-protoss" class="sc1-race-card" type="button" data-race="protoss">
+                                <div class="race-name">프로토스</div>
+                                <div class="race-desc">고등 문명 · 사이오닉</div>
+                            </button>
+                        </div>
+                        <div class="sc1-hint">
+                            팁: 게임 시작 후 시야 밖 적/자원은 안 보입니다.
+                        </div>
+                    </div>
+
+                    <div id="panel-options" class="sc1-panel" role="region" aria-label="옵션">
+                        <div class="sc1-panel-title">옵션</div>
+                        <div class="sc1-panel-sub">추가 예정입니다.</div>
+                        <div class="sc1-options">
+                            <div class="sc1-option-row">
+                                <span class="sc1-option-label">게임 속도</span>
+                                <span class="sc1-option-value">스타1 스타일 (24 FPS)</span>
+                            </div>
+                            <div class="sc1-option-row">
+                                <span class="sc1-option-label">안개</span>
+                                <span class="sc1-option-value">탐험/가시성 적용</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="panel-help" class="sc1-panel" role="region" aria-label="도움말">
+                        <div class="sc1-panel-title">도움말</div>
+                        <div class="sc1-panel-sub">기본 조작</div>
+                        <ul class="sc1-help">
+                            <li>좌클릭: 선택 / 드래그: 다중 선택</li>
+                            <li>우클릭: 이동 / 자원 우클릭: 채굴</li>
+                            <li>건물 선택: 생산 버튼 표시</li>
+                        </ul>
+                    </div>
+
+                    <div id="panel-exit" class="sc1-panel" role="region" aria-label="종료">
+                        <div class="sc1-panel-title">종료</div>
+                        <div class="sc1-panel-sub">브라우저 탭을 닫아 종료하세요.</div>
+                        <button type="button" class="sc1-exit-btn" id="btn-exit">닫기</button>
+                    </div>
+                </section>
             </div>
         </div>
     </div>
@@ -41,7 +91,7 @@
             <canvas id="game-canvas"></canvas>
         </div>
 
-        <!-- 하단: 스타크래프트 스타일 커맨드 패널 (메뉴 틀 참고) -->
+        <!-- 하단: 스타크래프트 스타일 커맨드 패널 -->
         <footer id="command-panel" class="menu-frame">
             <!-- 왼쪽: 자원 + 미니맵 -->
             <div id="panel-left" class="frame-inner">
@@ -65,14 +115,19 @@
                     <canvas id="minimap"></canvas>
                 </div>
             </div>
-            <!-- 가운데: 선택된 유닛/건물 정보 -->
-            <div id="selected-info" class="frame-inner"></div>
-            <!-- 오른쪽: 명령 카드(공격·정지 등) + 빌드 버튼 -->
+            <!-- 가운데: 선택 유닛 12칸 + 정보 -->
+            <div id="panel-center" class="frame-inner">
+                <div id="unit-slots" class="unit-slots" aria-label="선택 유닛 최대 12개">
+                    <!-- JS에서 12개 슬롯 채움 -->
+                </div>
+                <div id="selected-info" class="frame-inner selected-info-inner"></div>
+            </div>
+            <!-- 오른쪽 아래: 미니맵과 동일 크기 액션(공격·건설·수리·중지 등) + 빌드 -->
             <div id="panel-right" class="frame-inner">
-                <div id="action-panel">
+                <div id="action-panel" class="action-panel-minimap-size" aria-label="명령">
                     <button type="button" id="btn-attack" class="action-btn" title="공격">공격</button>
-                    <button type="button" id="btn-stop" class="action-btn" title="정지">정지</button>
-                    <button type="button" id="btn-hold" class="action-btn" title="홀드">홀드</button>
+                    <button type="button" id="btn-stop" class="action-btn" title="정지">중지</button>
+                    <button type="button" id="btn-repair" class="action-btn" title="수리">수리</button>
                     <button type="button" id="btn-move" class="action-btn" title="이동">이동</button>
                     <button type="button" id="btn-patrol" class="action-btn" title="순찰">순찰</button>
                     <button type="button" id="btn-menu" class="action-btn" title="메뉴">메뉴</button>
@@ -84,9 +139,33 @@
     <script src="sound.js"></script>
     <script src="game.js"></script>
     <script>
-        document.getElementById('race-terran').onclick = function() { if (window.startGame) window.startGame('terran'); };
-        document.getElementById('race-zerg').onclick = function() { if (window.startGame) window.startGame('zerg'); };
-        document.getElementById('race-protoss').onclick = function() { if (window.startGame) window.startGame('protoss'); };
+        // 메뉴 패널 전환
+        (function() {
+            var navBtns = Array.from(document.querySelectorAll('.sc1-nav-btn'));
+            var panels = Array.from(document.querySelectorAll('.sc1-panel'));
+            function setActive(targetId) {
+                navBtns.forEach(function(b) { b.classList.toggle('is-active', b.getAttribute('data-target') === targetId); });
+                panels.forEach(function(p) { p.classList.toggle('is-active', p.id === targetId); });
+            }
+            navBtns.forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    var t = btn.getAttribute('data-target');
+                    if (t) setActive(t);
+                });
+            });
+        })();
+
+        // 종족 선택 = 즉시 시작 (스타1 느낌)
+        function startWithRace(race) {
+            if (window.startGame) window.startGame(race);
+        }
+        document.getElementById('race-terran').onclick = function() { startWithRace('terran'); };
+        document.getElementById('race-zerg').onclick = function() { startWithRace('zerg'); };
+        document.getElementById('race-protoss').onclick = function() { startWithRace('protoss'); };
+
+        // 종료 버튼(가능한 경우 창 닫기)
+        var exitBtn = document.getElementById('btn-exit');
+        if (exitBtn) exitBtn.onclick = function() { try { window.close(); } catch (e) {} };
     </script>
 </body>
 </html>
