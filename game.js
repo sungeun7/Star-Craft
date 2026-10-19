@@ -62,9 +62,21 @@ var MAP_BARRIERS = (function() {
             });
         }
     }
+
+    // 맵 외곽 테두리 장벽(끝까지 붙게): 바깥으로 우회 이동 불가
+    var t = 90; // 외곽 벽 두께
+    // 상단/하단
+    list.push({ x: MAP_W / 2, y: t / 2, w: MAP_W + t * 2, h: t });
+    list.push({ x: MAP_W / 2, y: MAP_H - t / 2, w: MAP_W + t * 2, h: t });
+    // 좌/우
+    list.push({ x: t / 2, y: MAP_H / 2, w: t, h: MAP_H + t * 2 });
+    list.push({ x: MAP_W - t / 2, y: MAP_H / 2, w: t, h: MAP_H + t * 2 });
+
     return list;
 })();
 function isPointInBarrier(x, y) {
+    // 맵 바깥은 모두 벽으로 취급
+    if (x < 0 || y < 0 || x > MAP_W || y > MAP_H) return true;
     for (var i = 0; i < MAP_BARRIERS.length; i++) {
         var b = MAP_BARRIERS[i];
         if (x >= b.x - b.w / 2 && x <= b.x + b.w / 2 && y >= b.y - b.h / 2 && y <= b.y + b.h / 2) return true;
@@ -608,6 +620,7 @@ var UNIT_SVG = {
 var BUILDING_SVG = {
     'command-center': '<rect x="4" y="8" width="56" height="48" rx="4" fill="{{c}}"/><rect x="12" y="16" width="20" height="24" fill="{{c2}}"/><rect x="32" y="16" width="20" height="24" fill="{{c2}}"/>',
     'supply-depot': '<rect x="14" y="24" width="36" height="28" rx="2" fill="{{c}}"/><rect x="20" y="30" width="24" height="14" fill="{{c2}}"/>',
+    'refinery': '<rect x="10" y="18" width="44" height="36" rx="3" fill="{{c}}"/><rect x="18" y="24" width="18" height="24" fill="{{c2}}"/><rect x="38" y="24" width="8" height="24" fill="{{c2}}"/><rect x="26" y="12" width="12" height="8" fill="{{c}}"/>',
     'barracks': '<rect x="8" y="12" width="48" height="40" fill="{{c}}"/><rect x="16" y="20" width="32" height="24" fill="{{c2}}"/>',
     'factory': '<rect x="6" y="14" width="52" height="36" rx="2" fill="{{c}}"/><rect x="14" y="22" width="36" height="20" fill="{{c2}}"/>',
     'starport': '<rect x="10" y="18" width="44" height="32" rx="2" fill="{{c}}"/><ellipse cx="32" cy="34" rx="14" ry="8" fill="{{c2}}"/><rect x="28" y="8" width="8" height="12" fill="{{c}}"/>',
@@ -2277,9 +2290,8 @@ function handleDocMouseUp(e) {
     var x = pos.x, y = pos.y;
     var dist = Math.hypot(x - selectStart.x, y - selectStart.y);
     if (dist < BOX_SELECT_THRESHOLD) {
-        var worldX = x + gameState.camera.x;
-        var worldY = y + gameState.camera.y;
-        selectUnits(worldX, worldY);
+        // selectUnits는 스크린 좌표를 받는다
+        selectUnits(x, y);
     } else {
         selectUnits(selectStart.x, selectStart.y, true, selectEnd.x, selectEnd.y);
     }
